@@ -29,3 +29,6 @@ Thumbs.db
 # IDE
 .idea/
 *.swp
+
+#Key files
+.ssh/

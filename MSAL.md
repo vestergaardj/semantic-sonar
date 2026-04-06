@@ -118,29 +118,32 @@ Or via the portal:
 
 ### 2.4 Store the secret in Key Vault
 
+Secrets are stored **per-tenant** using the naming convention `tenant-{tenantId}-client-secret`, where `{tenantId}` is the Cosmos DB document ID (e.g. `tenant-11111111-2222-3333-4444-555555555555`):
+
 ```bash
 az keyvault secret set \
   --vault-name <kv-name> \
-  --name fabric-bridge-client-secret \
+  --name "tenant-tenant-<customer-entra-guid>-client-secret" \
   --value "<secret-value>"
 ```
 
-The Function App reads this secret via `KeyVaultService` using its **Managed Identity** (no credentials required at the Function level).
+The Function App reads this secret via `KeyVaultService.GetTenantClientSecretAsync(tenantId)` using its **Managed Identity** (no credentials required at the Function level). Secrets are cached in-memory for 30 minutes.
 
-### 2.5 Configure the Function App
+### 2.5 Register the tenant in Semantic Sonar
+
+Add the tenant via the dashboard or directly via the API, providing the app registration `clientId`:
 
 ```bash
-az functionapp config appsettings set \
-  --name <func-name> \
-  --resource-group <rg> \
-  --settings FABRIC_BRIDGE_CLIENT_ID=<powerbi-app-client-id>
+curl -X POST https://<swa-hostname>/api/tenants \
+  -H "Content-Type: application/json" \
+  -d '{
+    "displayName": "Contoso",
+    "entraId": "11111111-2222-3333-4444-555555555555",
+    "clientId": "<powerbi-app-client-id>"
+  }'
 ```
 
-Or update `src/SemanticSonar.Functions/local.settings.json` for local development:
-
-```json
-"FABRIC_BRIDGE_CLIENT_ID": "<powerbi-app-client-id>"
-```
+The `clientId` is stored on the tenant document in Cosmos DB and used at runtime by `PowerBiQueryService` to acquire per-tenant tokens. There is no shared Function App setting for the Power BI client ID.
 
 ### 2.6 Customer tenant admin consent
 
@@ -167,7 +170,8 @@ Azure SWA Easy Auth ──► Entra ID "Semantic Sonar Dashboard" app
     ▼
 Azure Function API
     │  DefaultAzureCredential (Managed Identity)
-    ├──► Azure Key Vault ──► multi-tenant client secret
+    ├──► Cosmos DB ──► tenant.ClientId (per-tenant app registration client ID)
+    ├──► Azure Key Vault ──► tenant-{tenantId}-client-secret (per-tenant)
     │
     │  ClientSecretCredential(customerTenantId, clientId, secret)
     ▼
@@ -182,9 +186,9 @@ Customer Entra Tenant ──► Power BI REST API
 |---|---|---|
 | `NEXT_PUBLIC_MSAL_CLIENT_ID` | `.env.local` | Dashboard app client ID |
 | `NEXT_PUBLIC_MSAL_TENANT_ID` | `.env.local` | Your (CatMan) tenant ID |
-| `FABRIC_BRIDGE_CLIENT_ID` | Function App settings | Power BI app client ID |
-| `FABRIC_BRIDGE_CLIENT_SECRET_NAME` | Function App settings | `fabric-bridge-client-secret` |
-| `KEY_VAULT_URI` | Function App settings | `https://kv-fabric-bridge-<suffix>.vault.azure.net/` |
+| `clientId` (on tenant document) | Cosmos DB `tenants` container | Power BI app client ID (per-tenant) |
+| Key Vault secret name | Azure Key Vault | `tenant-{tenantId}-client-secret` (per-tenant) |
+| `KEY_VAULT_URI` | Function App settings | `https://kv-semantic-sonar-<suffix>.vault.azure.net/` |
 
 ---
 
@@ -416,26 +420,24 @@ else
   echo "✔ Key Vault Secrets Officer role already assigned."
 fi
 
-# ── 3.2. Store Power BI client secret in Key Vault ────────────────────────────
+# ── 3.2. Store the Power BI client secret in Key Vault (per-tenant) ──────────
+# Secret name follows the convention: tenant-{tenantId}-client-secret
+# where tenantId = "tenant-<customer-entra-guid>" (the Cosmos DB document ID).
+# Run once per customer tenant onboarded.
+CUSTOMER_ENTRA_ID="<customer-entra-guid>"   # replace per tenant
 az keyvault secret set \
   --vault-name "$KV_NAME" \
-  --name "fabric-bridge-client-secret" \
+  --name "tenant-tenant-${CUSTOMER_ENTRA_ID}-client-secret" \
   --value "$PBI_SECRET"
 
-# ── 3.3. Set FABRIC_BRIDGE_CLIENT_ID on the Function App ─────────────────────
-az functionapp config appsettings set \
-  --name "$FUNC_NAME" \
-  --resource-group "$RG" \
-  --settings "FABRIC_BRIDGE_CLIENT_ID=${PBI_APP_ID}"
-
-# ── 3.4. Add the real SWA redirect URI to the Dashboard app registration ──────
+# ── 3.3. Add the real SWA redirect URI to the Dashboard app registration ──────
 az ad app update \
   --id "$DASHBOARD_APP_ID" \
   --web-redirect-uris \
     "https://${SWA_HOSTNAME}/.auth/login/aad/callback" \
     "http://localhost:3000/.auth/login/aad/callback"
 
-# ── 3.5. Configure SWA Easy Auth ──────────────────────────────────────────────
+# ── 3.4. Configure SWA Easy Auth ──────────────────────────────────────────────
 az staticwebapp auth update \
   --name "$SWA_NAME" \
   --resource-group "$RG" \
@@ -445,7 +447,7 @@ az staticwebapp auth update \
   --tenant-id "$TENANT_ID" \
   --openid-issuer "https://login.microsoftonline.com/${TENANT_ID}/v2.0"
 
-# ── 3.6. Write local dev .env.local ───────────────────────────────────────────
+# ── 3.5. Write local dev .env.local ───────────────────────────────────────────
 cat > src/SemanticSonar.Web/.env.local <<EOF
 NEXT_PUBLIC_MSAL_CLIENT_ID=${DASHBOARD_APP_ID}
 NEXT_PUBLIC_MSAL_TENANT_ID=${TENANT_ID}
@@ -464,17 +466,18 @@ az ad app list \
   --query "[].{Name:displayName, AppId:appId, Audience:signInAudience}" \
   --output table
 
-# Function App settings contain the app ID, KV URI, and secret name
+# Function App settings — KEY_VAULT_URI and COSMOS_ACCOUNT_ENDPOINT
 az functionapp config appsettings list \
   --name "$FUNC_NAME" \
   --resource-group "$RG" \
-  --query "[?name=='FABRIC_BRIDGE_CLIENT_ID' || name=='FABRIC_BRIDGE_CLIENT_SECRET_NAME' || name=='KEY_VAULT_URI' || name=='COSMOS_ACCOUNT_ENDPOINT']" \
+  --query "[?name=='KEY_VAULT_URI' || name=='COSMOS_ACCOUNT_ENDPOINT']" \
   --output table
 
-# KV secret is present and enabled
+# KV secret for a specific tenant is present and enabled
+# Replace CUSTOMER_ENTRA_ID with the tenant GUID
 az keyvault secret show \
   --vault-name "$KV_NAME" \
-  --name "fabric-bridge-client-secret" \
+  --name "tenant-tenant-${CUSTOMER_ENTRA_ID}-client-secret" \
   --query "{Name:name, Enabled:attributes.enabled, Expires:attributes.expires}" \
   --output table
 
@@ -505,18 +508,18 @@ Once the admin approves, the service principal is created in their tenant and th
 | Resource | Name pattern | Notes |
 |---|---|---|
 | Resource group | `rg-<envName>` | Created by `azd up`; use `azd env set AZURE_RESOURCE_GROUP` to override |
-| Static Web App | `swa-fabric-bridge-<suffix>` | Auto-named by Bicep |
-| Function App | `func-fabric-bridge-<suffix>` | Auto-named by Bicep |
-| Key Vault | `kv-fabric-bridge-<suffix>` | Max 24 chars |
-| Cosmos DB account | `cosmos-fabric-bridge-<suffix>` | Auto-named by Bicep |
+| Static Web App | `swa-semantic-sonar-<suffix>` | Auto-named by Bicep |
+| Function App | `func-fabric-sonar-<suffix>` | Auto-named by Bicep |
+| Key Vault | `kv-fabric-sonar-<suffix>` | Max 24 chars |
+| Cosmos DB account | `cosmos-fabric-sonar-<suffix>` | Auto-named by Bicep |
 | Storage account | `stsemanticsonar<suffix>` | No hyphens; max 24 chars |
-| App Insights | `appi-fabric-bridge-<suffix>` | Auto-named by Bicep |
-| Log Analytics | `log-fabric-bridge-<suffix>` | Auto-named by Bicep |
+| App Insights | `appi-fabric-sonar-<suffix>` | Auto-named by Bicep |
+| Log Analytics | `log-fabric-sonar-<suffix>` | Auto-named by Bicep |
 | Dashboard app registration | `Semantic Sonar Dashboard` | Display name in Entra ID |
 | Power BI app registration | `Semantic Sonar Power BI` | Display name in Entra ID |
 | Dashboard client secret | `swa-easy-auth` | Description in Certificates & secrets |
 | Power BI client secret | `powerbi-service` | Description in Certificates & secrets |
-| KV secret name | `fabric-bridge-client-secret` | Referenced by `FABRIC_BRIDGE_CLIENT_SECRET_NAME` |
+| KV secret name (per tenant) | `tenant-{tenantId}-client-secret` | e.g. `tenant-tenant-<guid>-client-secret` |
 
 ---
 
