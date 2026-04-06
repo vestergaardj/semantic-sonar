@@ -128,14 +128,25 @@ Semantic Sonar/
         ├── app/
         │   ├── layout.tsx             # Shell nav, global metadata
         │   ├── page.tsx               # Dashboard home
-        │   ├── api-test/page.tsx      # Interactive GET API test tool
+        │   ├── api-test/              # Interactive GET API test tool
+        │   ├── audit/                 # Audit log viewer
+        │   ├── browse/                # Power BI workspace browser
+        │   ├── dependencies/          # Dependency graph view
+        │   ├── maintenance/           # Maintenance window management
         │   ├── models/                # Model list + detail pages
-        │   └── tenants/               # Tenant list page
+        │   ├── radar/                 # Health radar chart
+        │   ├── tenants/               # Tenant list page
+        │   ├── uptime/                # Uptime report view
+        │   └── webhooks/              # Webhook configuration
         ├── components/
+        │   ├── HealthBadge.tsx        # Health indicator badge
         │   ├── LatencyChart.tsx       # Recharts latency over time
+        │   ├── MaintenanceEditor.tsx  # Maintenance window form
         │   ├── ModelCard.tsx          # Model summary card
         │   ├── SchedulePicker.tsx     # Interval selector component
-        │   └── StatusBadge.tsx        # Active / disabled / failing badge
+        │   ├── StatusBadge.tsx        # Active / disabled / failing badge
+        │   ├── TagInput.tsx           # Multi-value tag input
+        │   └── ThemeToggle.tsx        # Light/dark mode switch
         ├── lib/
         │   ├── api.ts                 # Typed fetch wrappers for all endpoints
         │   ├── auth.ts                # MSAL browser auth helpers
@@ -389,7 +400,7 @@ In the Portal, navigate to the Static Web App → **Authentication** → add an 
 
 ### 5. Grant the Function App Managed Identity access to Azure resources
 
-The Bicep modules create the resources but do not automatically assign RBAC roles (to avoid requiring Owner permissions during deployment). Assign these roles manually or add them to the Bicep:
+The Bicep modules already include all RBAC role assignments — `azd up` handles this automatically. No manual steps are required.
 
 | Resource | Role | Assignee |
 |---|---|---|
@@ -397,41 +408,7 @@ The Bicep modules create the resources but do not automatically assign RBAC role
 | Storage account | Storage Queue Data Contributor | Function App managed identity |
 | Key Vault | Key Vault Secrets User | Function App managed identity |
 
-```bash
-# Get the Function App's managed identity principal ID
-FUNC_PRINCIPAL=$(az functionapp identity show \
-  --name func-semantic-sonar-mb43627h \
-  --resource-group semantic-sonar \
-  --query principalId -o tsv)
-
-# Cosmos DB — Built-in Data Contributor
-az cosmosdb sql role assignment create \
-  --account-name cosmos-semantic-sonar-mb43627h \
-  --resource-group semantic-sonar \
-  --role-definition-id 00000000-0000-0000-0000-000000000002 \
-  --principal-id $FUNC_PRINCIPAL \
-  --scope "/"
-
-# Storage — Queue Data Contributor
-STORAGE_ID=$(az storage account show \
-  --name stfabricsonarmb43627h \
-  --resource-group semantic-sonar \
-  --query id -o tsv)
-az role assignment create \
-  --role "Storage Queue Data Contributor" \
-  --assignee-object-id $FUNC_PRINCIPAL \
-  --scope $STORAGE_ID
-
-# Key Vault — Secrets User
-KV_ID=$(az keyvault show \
-  --name kv-semantic-sonar-dev \
-  --resource-group semantic-sonar \
-  --query id -o tsv)
-az role assignment create \
-  --role "Key Vault Secrets User" \
-  --assignee-object-id $FUNC_PRINCIPAL \
-  --scope $KV_ID
-```
+> See [MI.md](MI.md) for the full Bicep snippets and an explanation of each role.
 
 ### 6. Add semantic models to monitor
 
