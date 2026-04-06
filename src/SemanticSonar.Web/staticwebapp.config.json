@@ -1,0 +1,59 @@
+{
+  "routes": [
+    {
+      "route": "/.auth/*",
+      "allowedRoles": ["anonymous"]
+    },
+    {
+      "route": "/api/*",
+      "allowedRoles": ["authenticated"]
+    },
+    {
+      "route": "/models",
+      "rewrite": "/models.html"
+    },
+    {
+      "route": "/models/new",
+      "rewrite": "/models/new.html"
+    },
+    {
+      "route": "/uptime",
+      "rewrite": "/uptime.html"
+    },
+    {
+      "route": "/models/import",
+      "rewrite": "/models/import.html"
+    },
+    {
+      "route": "/models/*",
+      "rewrite": "/models/_shell_.html"
+    },
+    {
+      "route": "/browse/*",
+      "rewrite": "/browse/_shell_.html"
+    },
+    {
+      "route": "/radar",
+      "rewrite": "/radar.html"
+    },
+    {
+      "route": "/webhooks",
+      "rewrite": "/webhooks.html"
+    },
+    {
+      "route": "/*",
+      "allowedRoles": ["authenticated"]
+    }
+  ],
+  "responseOverrides": {
+    "401": {
+      "redirect": "/.auth/login/aad?post_login_redirect_uri=/",
+      "statusCode": 302
+    }
+  },
+  "globalHeaders": {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "SAMEORIGIN",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains"
+  }
+}

@@ -1,0 +1,20 @@
+name: semantic-sonar
+metadata:
+  template: semantic-sonar@0.0.1
+
+services:
+  api:
+    project: ./src/SemanticSonar.Functions
+    language: dotnet
+    host: function
+
+  web:
+    project: ./src/SemanticSonar.Web
+    language: js
+    host: staticwebapp
+    # No 'dist' — SWA hybrid rendering manages the Next.js build output
+
+hooks:
+  preprovision:
+    shell: pwsh
+    run: Write-Host "Provisioning Semantic Sonar infrastructure..."

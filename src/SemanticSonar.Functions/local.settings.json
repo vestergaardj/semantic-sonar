@@ -1,0 +1,11 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "AZURE_FUNCTIONS_ENVIRONMENT": "Development",
+    "KEY_VAULT_URI": "https://kv-fabric-sonar-dev.vault.azure.net/",
+    "COSMOS_CONNECTION_STRING": "AccountEndpoint=https://cosmos-fabric-sonar-dev.documents.azure.com:443/;AccountKey=<dev-key>",
+    "COSMOS_DATABASE_NAME": "FabricSonar"
+  }
+}
