@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { resultsApi } from '@/lib/api';
-import type { ModelUptimeStats, UptimeWindow, ModelLatencyTrend, DailyLatencyPoint } from '@/lib/types';
+import { useEffect, useMemo, useState } from 'react';
+import { resultsApi, modelsApi } from '@/lib/api';
+import type { ModelUptimeStats, UptimeWindow, ModelLatencyTrend, DailyLatencyPoint, SemanticModelConfig } from '@/lib/types';
+import { generateSlaReportPdf } from '@/lib/slaReport';
 
 // ─── Availability helpers ───────────────────────────────────────────────────
 
@@ -116,14 +117,23 @@ type Tab = 'availability' | 'latency';
 export default function UptimePage() {
   const [tab, setTab] = useState<Tab>('availability');
   const [stats, setStats] = useState<ModelUptimeStats[]>([]);
+  const [models, setModels] = useState<SemanticModelConfig[]>([]);
   const [trends, setTrends] = useState<ModelLatencyTrend[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'active' | 'degraded'>('all');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [generatingPdf, setGeneratingPdf] = useState(false);
 
   useEffect(() => {
-    resultsApi.uptime()
-      .then(setStats)
+    Promise.all([
+      resultsApi.uptime(),
+      modelsApi.list().catch(() => [] as SemanticModelConfig[]),
+    ])
+      .then(([s, m]) => {
+        setStats(s);
+        setModels(m);
+      })
       .catch((e) => setError((e as Error).message))
       .finally(() => setLoading(false));
   }, []);
@@ -141,6 +151,78 @@ export default function UptimePage() {
     if (filter === 'degraded') return (s.last30d.uptimePercent ?? 100) < 99.5;
     return true;
   });
+
+  const filteredIds = useMemo(() => filtered.map((s) => s.modelId), [filtered]);
+  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
+  const someFilteredSelected = filteredIds.some((id) => selectedIds.has(id));
+
+  // Map modelId -> tags for quick lookup, and aggregate tag counts across loaded models.
+  const modelTagMap = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const mdl of models) m.set(mdl.id, mdl.tags ?? []);
+    return m;
+  }, [models]);
+
+  const tagCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const s of stats) {
+      const tags = modelTagMap.get(s.modelId) ?? [];
+      for (const t of tags) counts.set(t, (counts.get(t) ?? 0) + 1);
+    }
+    return Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [stats, modelTagMap]);
+
+  function modelIdsWithTag(tag: string): string[] {
+    return stats
+      .filter((s) => (modelTagMap.get(s.modelId) ?? []).includes(tag))
+      .map((s) => s.modelId);
+  }
+
+  function toggleTagSelection(tag: string) {
+    const ids = modelIdsWithTag(tag);
+    if (ids.length === 0) return;
+    const allSelected = ids.every((id) => selectedIds.has(id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) ids.forEach((id) => next.delete(id));
+      else ids.forEach((id) => next.add(id));
+      return next;
+    });
+  }
+
+  function toggleOne(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllFiltered() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        filteredIds.forEach((id) => next.delete(id));
+      } else {
+        filteredIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  }
+
+  async function createReport() {
+    const selected = stats.filter((s) => selectedIds.has(s.modelId));
+    if (selected.length === 0) return;
+    try {
+      setGeneratingPdf(true);
+      await generateSlaReportPdf(selected);
+    } catch (e) {
+      setError(`Failed to generate PDF: ${(e as Error).message}`);
+    } finally {
+      setGeneratingPdf(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -207,22 +289,76 @@ export default function UptimePage() {
       {/* ── Availability Tab ─────────────────────────────────────────────── */}
       {tab === 'availability' && (
         <>
-          {/* Filter */}
-          <div className="flex gap-1 rounded-lg border border-gray-200 bg-white p-0.5 dark:border-gray-700 dark:bg-gray-800 w-fit">
-            {(['all', 'active', 'degraded'] as const).map((f) => (
+          {/* Filter + report action */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex gap-1 rounded-lg border border-gray-200 bg-white p-0.5 dark:border-gray-700 dark:bg-gray-800 w-fit">
+              {(['all', 'active', 'degraded'] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFilter(f)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                    filter === f
+                      ? 'bg-brand-600 text-white'
+                      : 'text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  {f === 'all' ? 'All' : f === 'active' ? 'Active only' : 'Degraded (<99.5%)'}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                {selectedIds.size} selected
+              </span>
+              {selectedIds.size > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedIds(new Set())}
+                  className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 underline"
+                >
+                  Clear
+                </button>
+              )}
               <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  filter === f
-                    ? 'bg-brand-600 text-white'
-                    : 'text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
-                }`}
+                type="button"
+                onClick={createReport}
+                disabled={selectedIds.size === 0 || generatingPdf}
+                className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {f === 'all' ? 'All' : f === 'active' ? 'Active only' : 'Degraded (<99.5%)'}
+                {generatingPdf ? 'Generating…' : 'Create SLA Report'}
               </button>
-            ))}
+            </div>
           </div>
+
+          {/* Tag-based selection */}
+          {tagCounts.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                Select by tag:
+              </span>
+              {tagCounts.map(([tag, count]) => {
+                const ids = modelIdsWithTag(tag);
+                const allSelected = ids.length > 0 && ids.every((id) => selectedIds.has(id));
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => toggleTagSelection(tag)}
+                    className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition ${
+                      allSelected
+                        ? 'border-brand-600 bg-brand-600 text-white'
+                        : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                    }`}
+                    title={allSelected ? `Deselect ${count} model(s) tagged "${tag}"` : `Select ${count} model(s) tagged "${tag}"`}
+                  >
+                    <span>#{tag}</span>
+                    <span className={`tabular-nums ${allSelected ? 'text-brand-100' : 'text-gray-400 dark:text-gray-500'}`}>{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Summary cards */}
           <div className="grid grid-cols-3 gap-4">
@@ -252,6 +388,18 @@ export default function UptimePage() {
               <table className="min-w-full text-sm" aria-label="Model uptime statistics">
                 <thead className="bg-gray-50 dark:bg-gray-800">
                   <tr>
+                    <th className="px-4 py-2.5 text-left font-medium text-gray-700 dark:text-gray-300 w-10" scope="col">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all visible models"
+                        className="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                        checked={allFilteredSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = !allFilteredSelected && someFilteredSelected;
+                        }}
+                        onChange={toggleAllFiltered}
+                      />
+                    </th>
                     <th className="px-4 py-2.5 text-left font-medium text-gray-700 dark:text-gray-300" scope="col">Model</th>
                     <th className="px-4 py-2.5 text-left font-medium text-gray-700 dark:text-gray-300" scope="col">Tenant</th>
                     <th className="px-4 py-2.5 text-left font-medium text-gray-700 dark:text-gray-300" scope="col">Status</th>
@@ -263,6 +411,15 @@ export default function UptimePage() {
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700 bg-white dark:bg-gray-900">
                   {filtered.map((s) => (
                     <tr key={s.modelId} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                      <td className="px-4 py-2.5">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${s.modelName}`}
+                          className="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                          checked={selectedIds.has(s.modelId)}
+                          onChange={() => toggleOne(s.modelId)}
+                        />
+                      </td>
                       <td className="px-4 py-2.5">
                         <a
                           href={`/models/${s.modelId}?tenantId=${encodeURIComponent(s.tenantId)}`}

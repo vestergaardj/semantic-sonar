@@ -1,8 +1,15 @@
 import type { NextConfig } from 'next';
+import path from 'path';
 
 const isDev = process.env.NODE_ENV === 'development';
 
 const nextConfig: NextConfig = {
+  // Pin the workspace root to this project so Next.js doesn't pick up a stray
+  // package.json/lockfile in a parent directory (which breaks module resolution).
+  turbopack: {
+    root: path.resolve(__dirname),
+  },
+  outputFileTracingRoot: path.resolve(__dirname),
   // 'export' is needed for the SWA static build; disable it in dev so that
   // API routes and rewrites work during local development.
   ...(isDev ? {} : { output: 'export' }),
