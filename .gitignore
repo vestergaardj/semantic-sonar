@@ -1,0 +1,36 @@
+# .NET build outputs
+bin/
+obj/
+publish/
+*.user
+*.suo
+
+# Function App artifacts
+func.zip
+publish_test/
+publish_output/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Azure SWA deployment caches
+*-swa-oryx/
+
+# Environment files
+.env.local
+.env.local.bak
+local.settings.json
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# IDE
+.idea/
+*.swp
+
+#Key files
+.ssh/
